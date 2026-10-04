@@ -111,8 +111,14 @@ are INDETERMINATE with sanitized diagnostics. Deployment UID/resourceVersion
 changes during collection also force INDETERMINATE. These sequential reads are
 not an atomic cluster snapshot; later runtime changes require another check.
 
-The CLI prints target and a JSON report containing approval, observations,
-per-Pod verification, collection issues and final verification. Exit codes are
+The CLI defaults to concise human-readable output with target, approval, observed
+Pods, collection issues, status and reason explanations. Consistent replicas are
+grouped; large reports show at most five groups and three Pod names per group.
+Append `--json` for the complete report (approval, observations, per-Pod results,
+collection issues and final verification) as JSON only on stdout. Errors remain
+on stderr. When invoking through npm for machine parsing, use
+`npm run --silent verify:k8s -- ... --json` to suppress npm's own banner.
+Exit codes are
 0 VERIFIED, 2 TRUST_BROKEN, 3 INDETERMINATE, and 1 CLI/configuration failures.
 For the supplied consistent v2 state, expect TRUST_BROKEN, reference and runtime
 imageID mismatch reasons, and exit 2. Mixed v1/v2 rollout Pods yield INDETERMINATE.

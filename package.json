@@ -19,7 +19,8 @@
     "demo:runtime": "tsx src/scripts/demo-runtime-verification.ts",
     "test:runtime": "tsx src/scripts/test-runtime-verification.ts",
     "verify:k8s": "tsx src/scripts/verify-k8s.ts",
-    "test:k8s": "tsx src/scripts/test-kubernetes.ts"
+    "test:k8s": "tsx src/scripts/test-kubernetes.ts",
+    "test:k8s:output": "tsx src/scripts/test-kubernetes-output.ts"
   },
   "keywords": [],
   "author": "",
