@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+coverage/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Secrets / keys
+*.key
+*.pem
+wallet*.json
+
+# Solana
+.solana/
+test-ledger/
+
+# OS / editors
+.DS_Store
+.vscode/
+
+# Local development
+.local/

@@ -1,0 +1,28 @@
+{
+  "name": "attenode",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "tsx src/index.ts",
+    "check": "tsc --noEmit",
+    "demo:sas": "tsx src/scripts/demo-sas-attestation.ts",
+    "demo:sas:onchain": "tsx src/scripts/demo-sas-onchain.ts",
+    "demo:sas:transactions": "tsx src/scripts/demo-sas-transactions.ts",
+    "test:sas:executor": "tsx src/scripts/test-sas-executor.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "gill": "^0.14.0",
+    "sas-lib": "^1.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
