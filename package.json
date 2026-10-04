@@ -10,7 +10,12 @@
     "demo:sas": "tsx src/scripts/demo-sas-attestation.ts",
     "demo:sas:onchain": "tsx src/scripts/demo-sas-onchain.ts",
     "demo:sas:transactions": "tsx src/scripts/demo-sas-transactions.ts",
-    "test:sas:executor": "tsx src/scripts/test-sas-executor.ts"
+    "test:sas:executor": "tsx src/scripts/test-sas-executor.ts",
+    "devnet:credential": "tsx src/scripts/devnet-create-credential.ts",
+    "devnet:schema": "tsx src/scripts/devnet-create-schema.ts",
+    "test:devnet:schema": "tsx src/scripts/test-devnet-schema.ts",
+    "devnet:attestation": "tsx src/scripts/devnet-create-attestation.ts",
+    "test:devnet:attestation": "tsx src/scripts/test-devnet-attestation.ts"
   },
   "keywords": [],
   "author": "",
