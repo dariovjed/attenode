@@ -4,9 +4,16 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "test:monitor:sas-comparison": "tsx apps/monitor/test-sas-comparison.ts",
+    "dashboard:start": "npm --prefix apps/dashboard run dev",
+    "dashboard:build": "npm --prefix apps/dashboard run build",
+    "dashboard:check": "npm --prefix apps/dashboard run check",
+    "test:dashboard": "tsx --tsconfig apps/dashboard/tsconfig.json apps/dashboard/src/test-dashboard.tsx",
+    "monitor:start": "tsx apps/monitor/index.ts",
+    "test:monitor": "tsx apps/monitor/test-monitor.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "tsx src/index.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc --project apps/monitor/tsconfig.json --noEmit",
     "demo:sas": "tsx src/scripts/demo-sas-attestation.ts",
     "demo:sas:onchain": "tsx src/scripts/demo-sas-onchain.ts",
     "demo:sas:transactions": "tsx src/scripts/demo-sas-transactions.ts",
@@ -28,7 +35,8 @@
     "diagnose:sas:credential": "tsx src/scripts/diagnose-sas-credential.ts",
     "test:sas:credential-diagnostic": "tsx src/scripts/test-sas-credential-diagnostic.ts",
     "diagnose:verify:cli": "tsx src/scripts/diagnose-verification-cli.ts",
-    "test:verification:cli-diagnostic": "tsx src/scripts/test-verification-cli-diagnostic.ts"
+    "test:verification:cli-diagnostic": "tsx src/scripts/test-verification-cli-diagnostic.ts",
+    "test:monitor:rpc-transport": "tsx src/scripts/test-monitor-rpc-transport.ts"
   },
   "keywords": [],
   "author": "",
@@ -37,7 +45,8 @@
   "dependencies": {
     "@kubernetes/client-node": "2.0.0",
     "gill": "^0.14.0",
-    "sas-lib": "^1.0.10"
+    "sas-lib": "^1.0.10",
+    "@solana/rpc-spec-types": "5.5.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

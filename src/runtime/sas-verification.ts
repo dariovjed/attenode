@@ -2,7 +2,7 @@ import { readDemoApiApproval, type SasApproval } from "../attestations/sas-appro
 import type { SasAccountReader } from "../attestations/sas-reader.js";
 import { demoApiIdentity, demoApiTarget } from "../scripts/devnet-demo-api.js";
 import { verifyKubernetesDeployment, type KubernetesReader, type KubernetesVerification } from "./kubernetes.js";
-import type { ObservedRuntimeIdentity, VerificationStatus } from "./verification.js";
+import type { ApprovedDeploymentIdentity, ObservedRuntimeIdentity, VerificationStatus } from "./verification.js";
 import { atDiagnosticStage, diagnostic, VerificationDiagnosticError } from "./diagnostics.js";
 
 export interface SasBindingPolicy { namespace: string; workload: string; container: string; imageRepository: string }
@@ -43,14 +43,37 @@ export async function verifySasKubernetesDeployment(
 ): Promise<SasKubernetesReport> {
   validateSasBindingPolicy(policy);
   const sas = await readDemoApiApproval(sasReader, clock());
+  if (sas.status !== "VERIFIED" || !sas.payload) return composeSasKubernetesReport(sas, null, policy, clock());
+  const approved = approvedIdentityFromSas(sas, policy)!;
+  const reader = await atDiagnosticStage("KUBERNETES_CLIENT", kubernetesReader);
+  const kubernetes = await verifyKubernetesDeployment(reader, approved);
+  return composeSasKubernetesReport(sas, kubernetes, policy, clock());
+}
+
+/** Binding comes from a validated payload, never from a cached overall result. */
+export function approvedIdentityFromSas(sas: SasApproval, policy: SasBindingPolicy): ApprovedDeploymentIdentity | null {
+  validateSasBindingPolicy(policy);
+  if (sas.status !== "VERIFIED" || !sas.payload) return null;
+  return { namespace: policy.namespace, workload: policy.workload, container: policy.container,
+    imageReference: `${policy.imageRepository}@${sas.payload.artifactDigest}` };
+}
+
+export function sasApprovalHasExpired(sas: SasApproval, nowMs: number): boolean {
+  return sas.expiry === undefined || !/^\d+$/.test(sas.expiry) || BigInt(sas.expiry) <= BigInt(Math.floor(nowMs / 1000));
+}
+
+/** Shared pure aggregation for CLI and monitor. Callers supply only validated SAS evidence. */
+export function composeSasKubernetesReport(sas: SasApproval, kubernetes: KubernetesVerification | null,
+  policy: SasBindingPolicy, nowMs: number): SasKubernetesReport {
+  validateSasBindingPolicy(policy);
   const report: SasKubernetesReport = { mode: "sas", localPolicy: { ...policy }, sas, kubernetes: null,
     artifact: { status: "INDETERMINATE", reason: "No validated SAS approval; runtime was not read.", perPod: [] },
     result: { status: "INDETERMINATE", reason: sas.reason } };
-  if (sas.status !== "VERIFIED" || !sas.payload) return report;
-  const approved = { namespace: policy.namespace, workload: policy.workload, container: policy.container,
-    imageReference: `${policy.imageRepository}@${sas.payload.artifactDigest}` };
-  const reader = await atDiagnosticStage("KUBERNETES_CLIENT", kubernetesReader);
-  const kubernetes = await verifyKubernetesDeployment(reader, approved);
+  if (sas.status !== "VERIFIED" || !sas.payload || !kubernetes) return report;
+  const approved = approvedIdentityFromSas(sas, policy)!;
+  if (kubernetes.approved.namespace !== approved.namespace || kubernetes.approved.workload !== approved.workload ||
+      kubernetes.approved.container !== approved.container || kubernetes.approved.imageReference !== approved.imageReference ||
+      kubernetes.approved.runtimeImageID !== undefined) throw new VerificationDiagnosticError("SAS_APPROVAL_BINDING_FAILED");
   report.kubernetes = kubernetes;
   const perPod = kubernetes.observations.map(observation => ({ pod: observation.pod, result: verifyManifestEvidence(approved.imageReference, observation) }));
   const incomplete = kubernetes.collectionIssues.length > 0 || kubernetes.result.status === "INDETERMINATE" ||
@@ -74,7 +97,7 @@ export async function verifySasKubernetesDeployment(
     : incomplete ? artifact
     : kubernetes.result.status === "TRUST_BROKEN" ? { status: "TRUST_BROKEN", reason: "Pod image configuration differs from the SAS-approved binding." }
       : artifact;
-  if (BigInt(sas.expiry!) <= BigInt(Math.floor(clock() / 1000))) {
+  if (sasApprovalHasExpired(sas, nowMs)) {
     report.sas = { ...sas, status: "INDETERMINATE", reason: "Attestation expired during runtime collection.", diagnostic: diagnostic("SAS_APPROVAL_EXPIRED") };
     report.result = { status: "INDETERMINATE", reason: report.sas.reason };
   }

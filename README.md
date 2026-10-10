@@ -312,6 +312,10 @@ Runtime claims depend on trusted provenance verification, Kubernetes observation
 Attenode is being developed for the **Colosseum World's Fair Solana hackathon**. The MVP focuses on connecting an approved software artifact to an observed Kubernetes deployment and a verifiable SAS deployment identity.
 # Isolating the SAS CLI path
 
+The React Live Trust Dashboard is in [apps/dashboard](apps/dashboard/README.md). Start the configured monitor with `npm run monitor:start`, then run `npm run dashboard:start` and open `http://127.0.0.1:5173`. Validate with `npm run dashboard:check`, `npm run test:dashboard` and `npm run dashboard:build`.
+
+El backend del Live Trust Dashboard está disponible en [apps/monitor](apps/monitor/README.md). Iniciá `npm run monitor:start` después de configurar las variables `ATTENODE_*` y autorizar las lecturas reales. Ofrece `/api/status`, `/api/events` (SSE) y `/api/health` únicamente en loopback; las pruebas offline se ejecutan con `npm run test:monitor`.
+
 The production `verify:k8s` entry point now dynamically loads the Kubernetes client only when its reader factory is invoked. In SAS mode this occurs after SAS approval validates; manual mode loads it after argument validation. Import and construction failures retain the KUBERNETES_CLIENT diagnostic stage and exit 1. This isolates module initialization but does not establish that the earlier eager import caused the live RPC failure; an authorized production retry is required.
 
 An operator can run `npm run --silent diagnose:verify:cli` (or append `-- --json`) to exercise the actual verification CLI runner with real finalized Devnet SAS reads and the existing demo-api binding policy. This diagnostic never imports the real Kubernetes client, loads kubeconfig, or contacts Kubernetes. No wallet or transaction is involved. Run it only when Devnet reads are authorized.

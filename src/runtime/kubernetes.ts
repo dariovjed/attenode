@@ -28,7 +28,12 @@ function validMeta(meta: V1ObjectMeta | undefined, namespace: string): boolean {
 }
 
 /** Only GET/list dependencies are exposed; no credentials or client globals here. */
-export async function verifyKubernetesDeployment(reader: KubernetesReader, approved: ApprovedDeploymentIdentity): Promise<KubernetesVerification> {
+export interface KubernetesEvidence {
+  observations: ObservedRuntimeIdentity[];
+  collectionIssues: string[];
+  diagnostics?: SafeDiagnostic[];
+}
+export async function collectKubernetesEvidence(reader: KubernetesReader, approved: Pick<ApprovedDeploymentIdentity, "namespace" | "workload" | "container">): Promise<KubernetesEvidence> {
   const observations: ObservedRuntimeIdentity[] = [], collectionIssues: string[] = [];
   const diagnostics: SafeDiagnostic[] = [];
   try {
@@ -88,6 +93,13 @@ export async function verifyKubernetesDeployment(reader: KubernetesReader, appro
     collectionIssues.push("Kubernetes read failed or returned an invalid target Deployment.");
     diagnostics.push(safeDiagnostic(error, "KUBERNETES_OBSERVATION"));
   }
+  return { observations, collectionIssues, ...(diagnostics.length ? { diagnostics } : {}) };
+}
+
+/** Pure comparison over collected evidence; does not mutate a reusable snapshot. */
+export function compareKubernetesEvidence(evidence: KubernetesEvidence, approved: ApprovedDeploymentIdentity): KubernetesVerification {
+  const observations = evidence.observations;
+  const collectionIssues = [...evidence.collectionIssues], diagnostics = [...(evidence.diagnostics ?? [])];
   const perPod = observations.map(observation => ({ observation, result: verifyRuntimeIdentity(approved, observation) }));
   const identities = new Set(observations.map(o => JSON.stringify([o.imageReference, o.runtimeImageID, o.ready])));
   let result: RuntimeVerificationResult;
@@ -98,6 +110,9 @@ export async function verifyKubernetesDeployment(reader: KubernetesReader, appro
   else result = perPod[0]!.result; // every replica has identical comparison inputs
   if (!diagnostics.length && result.status === "INDETERMINATE") diagnostics.push(diagnostic("KUBERNETES_OBSERVATION_INCOMPLETE"));
   return { approved, observations, perPod, collectionIssues, result, ...(diagnostics.length ? { diagnostics } : {}) };
+}
+export async function verifyKubernetesDeployment(reader: KubernetesReader, approved: ApprovedDeploymentIdentity): Promise<KubernetesVerification> {
+  return compareKubernetesEvidence(await collectKubernetesEvidence(reader, approved), approved);
 }
 export function verificationExitCode(result: Pick<RuntimeVerificationResult, "status">): number {
   return result.status === "VERIFIED" ? 0 : result.status === "TRUST_BROKEN" ? 2 : 3;

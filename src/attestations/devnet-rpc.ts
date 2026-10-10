@@ -8,7 +8,7 @@ export function createDevnetSolanaClient() {
 }
 export function fetchDevnetEncodedAccount(
   rpc: ReturnType<typeof createDevnetSolanaClient>["rpc"], accountAddress: Address,
-  config: { commitment: "confirmed" | "finalized" },
+  config: { commitment: "confirmed" | "finalized"; abortSignal?: AbortSignal },
 ) {
   return fetchEncodedAccount(rpc, accountAddress, config);
 }

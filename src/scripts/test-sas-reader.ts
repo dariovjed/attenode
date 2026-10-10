@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { address, lamports, SOLANA_ERROR__ACCOUNTS__FAILED_TO_DECODE_ACCOUNT } from "gill";
+import { mock } from "node:test";
+import { address, lamports, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR, SOLANA_ERROR__ACCOUNTS__FAILED_TO_DECODE_ACCOUNT } from "gill";
 import { createDevnetSasReader, type DevnetReaderDependencies } from "../attestations/sas-reader.js";
 import { devnetRpcUrl, fetchDevnetEncodedAccount } from "../attestations/devnet-rpc.js";
 import { readDemoApiApproval, demoApiAttestationAddress } from "../attestations/sas-approval.js";
@@ -96,3 +97,64 @@ for (const [deps, expectedCode, operation] of [
   cases++;
 }
 console.log(`SAS reader offline tests: PASS (${cases} failure scenarios; shared Gill fetch/base64 format, finalized commitment, no downgrade, RPC operations/account labels and sanitization)`);
+
+for (const [statusCode, expectedCode] of [[429, "SAS_RPC_RATE_LIMITED"], [503, "SAS_RPC_HTTP_UNAVAILABLE"], [401, "SAS_RPC_HTTP_REJECTED"]] as const) {
+  await rejects(() => createDevnetSasReader({ ...dependencies, async fetchAccount() {
+    throw Object.assign(rawError(), { context: { __code: SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR, statusCode, headers: secret, message: secret } });
+  } }).account(requested), expectedCode, { operation: "ACCOUNT_FETCH" });
+}
+await rejects(() => createDevnetSasReader({ ...dependencies, async fetchAccount() {
+  throw Object.assign(rawError(), { cause: { code: "UND_ERR_SOCKET", message: secret } });
+} }).account(requested), "SAS_RPC_CONNECTION_RESET", { operation: "ACCOUNT_FETCH" });
+let retryCalls = 0, concurrent = 0, maximum = 0;
+const recovering = createDevnetSasReader({ ...dependencies, async fetchAccount(_rpc, accountAddress, config) {
+  assert.equal(config.commitment, "finalized"); assert.ok(config.abortSignal);
+  concurrent++; maximum = Math.max(maximum, concurrent);
+  try {
+    if (++retryCalls < 3) throw Object.assign(rawError(), { cause: { code: "ECONNRESET" } });
+    return { ...valid, address: accountAddress };
+  } finally { concurrent--; }
+} }, { retryTransient: true });
+assert.ok(await recovering.account(requested));
+assert.equal(retryCalls, 3); assert.equal(maximum, 1);
+retryCalls = 0;
+await rejects(() => createDevnetSasReader({ ...dependencies, async fetchAccount() {
+  retryCalls++; throw Object.assign(rawError(), { context: { __code: SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR, statusCode: 503 } });
+} }, { retryTransient: true }).account(requested), "SAS_RPC_HTTP_UNAVAILABLE", { operation: "ACCOUNT_FETCH" });
+assert.equal(retryCalls, 3);
+for (const error of [rawError(), Object.assign(rawError(), { cause: { code: "CERT_HAS_EXPIRED" } }),
+  Object.assign(rawError(), { context: { __code: SOLANA_ERROR__ACCOUNTS__FAILED_TO_DECODE_ACCOUNT } })]) {
+  let count = 0;
+  await assert.rejects(createDevnetSasReader({ ...dependencies, async fetchAccount() { count++; throw error; } }, { retryTransient: true }).account(requested));
+  assert.equal(count, 1);
+}
+let absentCalls = 0;
+assert.equal(await createDevnetSasReader({ ...dependencies, async fetchAccount() {
+  absentCalls++; return { address: requested, exists: false };
+} }, { retryTransient: true }).account(requested), null);
+assert.equal(absentCalls, 1);
+console.log("SAS RPC reliability offline tests: PASS (SDK context status, nested transport causes, bounded retry/recovery, finalized-only, no overlap, no retries for unknown/TLS/decode/missing accounts)");
+
+mock.timers.enable({ apis: ["setTimeout"] });
+let lateResolve!: (value: unknown) => void;
+let firstSignal!: AbortSignal;
+let delayedCalls = 0;
+const delayedReader = createDevnetSasReader({ ...dependencies, async fetchAccount(_rpc, _address, config) {
+  assert.equal(config.commitment, "finalized");
+  if (++delayedCalls === 1) {
+    firstSignal = config.abortSignal!;
+    return new Promise(resolve => { lateResolve = resolve; }); // deliberately ignores abort
+  }
+  return valid;
+} }, { retryTransient: true });
+const delayedResult = delayedReader.account(requested);
+mock.timers.tick(2000);
+assert.equal(firstSignal.aborted, true);
+assert.equal(delayedCalls, 1); // never launch a retry while the aborted transport is still pending
+lateResolve(valid);
+for (let step = 0; step < 5; step++) await Promise.resolve();
+mock.timers.tick(250);
+assert.ok(await delayedResult);
+assert.equal(delayedCalls, 2); // late positive response was discarded, then a fresh request succeeded
+mock.timers.reset();
+console.log("SAS RPC cancellation offline test: PASS (abort propagation, late response discard and transport-settlement lock)");
