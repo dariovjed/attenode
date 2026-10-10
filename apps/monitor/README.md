@@ -1,19 +1,13 @@
 # Attenode Live Trust Monitor
 
-Temporary process-local diagnostic (no HTTP endpoint): with the existing monitor environment configured, run `ATTENODE_DIAGNOSE_SAS=1 npm run monitor:start`. Stop the previous monitor first so only one owns port 3001. The flag must equal `1`; normal startup is unchanged when unset.
+A local, read-only HTTP backend for the [Live Trust Dashboard](../dashboard/README.md). It reuses SAS validation, Kubernetes collection and pure runtime aggregation from the existing verifier. It does not cache a final VERIFIED decision or change the CLI's verification behavior.
 
-Before periodic polling begins, the **same Node process that serves HTTP** runs the original seven SAS comparisons: fresh plain reader before Kubernetes loads, reuse of that plain reader, fresh monitor-retry reader, fresh plain reader concurrently with Kubernetes, fresh plain reader after Kubernetes, fresh retry reader concurrently with Kubernetes, and reuse of the original plain reader after Kubernetes. It then runs `FIXED_AFTER_K8S` and `FIXED_CONCURRENT_K8S` using the corrected monitor transport. Every SAS comparison invokes the existing `readDemoApiApproval` and finalized reader, with full validation. Diagnostic results never populate monitor evidence. A rejected result is not fabricated success. HTTP may show pending/stopped monitor health during this preflight.
+## Start
 
-Structured JSON records go only to local stderr: phase/source, outcome, elapsed milliseconds, and allowlisted diagnostic categories/account labels on errors. Account bytes, payload, raw messages, URLs, headers, stack traces, configuration and secrets are never logged. Once comparisons finish, normal scheduling starts with console-only timing/category observation of its actual source calls; no extra periodic SAS reads are added. A 15-second diagnostic watchdog only reports STILL_PENDING: it does not abandon a transport or launch overlapping phases. If a probe never settles, polling deliberately does not start; stop this diagnostic run and restart normally.
-
-Compare with the standalone `verify:k8s --sas` command in a separate run using the same configured environment. Interpret differences as evidence to investigate, not proof of causation: a repeatable plain success/retry failure isolates the monitor-only cancellation/backoff path; a before/after change implicates a process lifecycle interaction; a concurrent-only change narrows it to overlap with Kubernetes. `VALIDATED` means SAS-only validation, never an overall runtime VERIFIED assertion. Unknown account-fetch categories cannot prove rate limiting. Disable by restarting without the flag; remove `sas-comparison.ts` and its guarded startup wiring after investigation.
-
-Backend local read-only, sin frontend ni dependencias nuevas. Reutiliza `readDemoApiApproval` y las funciones de colección, comparación y agregación extraídas del core del CLI, con commitment SAS finalized y adaptador Kubernetes de carga diferida. No cambia la aprobación, los formatos de imageID ni la agregación del CLI. La política actual solo admite el demo-api existente; configurar otra combinación falla al arrancar.
-
-El operador debe autorizar las lecturas reales de Devnet y Kubernetes antes de iniciarlo. Configurá una ruta explícita al kubeconfig autorizado mediante el entorno; el monitor no carga archivos `.env`, wallets ni el kubeconfig por defecto. No incluyas secretos en los comandos que compartas.
+From the repository root, with dependencies installed and live reads authorized:
 
 ```bash
-export ATTENODE_KUBECONFIG="/ruta/autorizada/al/kubeconfig"
+export ATTENODE_KUBECONFIG="/path/to/authorized/kubeconfig"
 export ATTENODE_CONTEXT="kind-attenode"
 export ATTENODE_NAMESPACE="attenode-demo"
 export ATTENODE_DEPLOYMENT="demo-api"
@@ -22,42 +16,72 @@ export ATTENODE_IMAGE_REPOSITORY="ghcr.io/dariovjed/demo-api"
 npm run monitor:start
 ```
 
-Variables opcionales: `ATTENODE_MONITOR_PORT` (3001) y `ATTENODE_MONITOR_ORIGIN` (`http://127.0.0.1:5173`). El bind siempre es `127.0.0.1`. CORS permite un único origen HTTP local exacto, sin credenciales, comodines ni reflexión de orígenes. Requests sin Origin de herramientas locales son aceptadas; Host también debe ser loopback para bloquear DNS rebinding. No hay autenticación: cualquier proceso local puede leer la evidencia pública.
+All six variables are required. The implemented local binding supports only this demo-api target and image repository. No `.env`, wallet or default kubeconfig is loaded. Authentication follows the explicitly supplied kubeconfig, including its configured authentication plugins.
 
-- `GET /api/status`: estado general, timestamp de respuesta, `inFlight`, diagnóstico seguro, `report` vigente y `lastObtainedReport` exclusivamente histórico (`diagnosticOnly: true`). `freshness.sas` y `freshness.kubernetes` incluyen `checkedAt`, `lastAttemptAt`, `completedAt`, `ageMs`, `maxAgeMs`, `fresh`, `inFlight`, `timedOut` y diagnóstico separado. La edad cuenta desde el inicio de cada lectura, no desde su finalización; los errores no reinician la edad. `freshness.evidenceCurrent` exige evidencia vigente de ambas fuentes y un resultado determinado. Una advertencia SAS puede acompañar VERIFIED/TRUST_BROKEN durante la ventana de tolerancia; health estará DEGRADED y mostrará el error.
-- `GET /api/events`: SSE `evidence` en cada actualización y `transition` solamente cuando cambia el estado general. Cada conexión recibe inmediatamente un snapshot; al reconectar se resincroniza con el estado actual, sin replay SSE. Hasta 64 clientes; consumidores lentos se desconectan.
-- `GET /api/history`: las últimas 100 transiciones en memoria (ID, timestamp, origen/destino y diagnóstico sanitizado). No conserva cuerpos RPC, kubeconfig, reportes completos ni secretos. Se vacía al reiniciar.
-- `GET /api/health`: estado operativo (`MONITORING`, `DEGRADED` o `STOPPED`), fuentes en curso, estado de verificación, frescura y diagnósticos. HTTP 200 indica que el API responde, no que exista confianza VERIFIED.
+| Optional variable | Default | Meaning |
+| --- | --- | --- |
+| `ATTENODE_MONITOR_PORT` | `3001` | Local HTTP port |
+| `ATTENODE_MONITOR_ORIGIN` | `http://127.0.0.1:5173` | One exact local HTTP frontend origin |
+| `ATTENODE_SAS_MAX_AGE_MS` | `120000` | Maximum SAS evidence age; range 1000–3600000 ms |
 
-Kubernetes se observa inicialmente y cada 5 segundos, incluso sin aprobación SAS; esas observaciones solo pueden fundamentar confianza cuando existe aprobación válida. SAS se valida inicialmente y cada 60 segundos. Se cachea únicamente la aprobación validada, no la conclusión final; cada snapshot recompone la comparación de configuración y evidencia OCI con las observaciones Kubernetes actuales. El CLI conserva su flujo de validación completa por invocación y sus códigos de salida.
+The server always binds to `127.0.0.1`. CORS allows the configured origin without credentials or wildcards; Host must also be loopback. Local requests without Origin are accepted. There is no authentication: other local processes can read the public evidence. No HTTP parameter selects files, targets or commands.
 
-`ATTENODE_SAS_MAX_AGE_MS` define la frescura máxima SAS: por defecto **120000 ms**, rango 1000–3600000 ms. Valores inferiores al período de 60 segundos producen intervalos INDETERMINATE deliberadamente. Kubernetes conserva un máximo de **15000 ms**, pero cualquier error de lectura invalida de inmediato su evidencia actual. Ninguna consulta HTTP cambia objetivos ni dispara lecturas.
+## HTTP contract
 
-Política SAS ante errores: solo fallos de disponibilidad (`SAS_RPC_ACCOUNT_FETCH_FAILED`, `SAS_RPC_FAILED`, timeout, endpoint inaccesible, rate limiting confirmado por categoría SDK o timeout del monitor) permiten reutilizar una aprobación previamente validada dentro de su ventana y antes de su expiry. Un error genérico de fetch **no prueba** rate limiting ni que la causa sea transitoria; esta es una tolerancia acotada de disponibilidad, visible en el reporte. No reinicia el plazo. Un rechazo de Credential/Schema/Attestation, cuenta faltante, error de inicialización, dirección o decodificación invalidan inmediatamente la aprobación cacheada. Un resultado negativo explícito recibido tarde también la invalida; un resultado positivo tardío nunca la restablece. Sin aprobación vigente el estado siempre es INDETERMINATE, aunque Kubernetes muestre drift. El vencimiento se comprueba en cada snapshot con la regla compartida del core.
+- `GET /api/status`: current status, response timestamp, source freshness, sanitized diagnostics and current `report`. `lastObtainedReport` is historical and explicitly `diagnosticOnly`; it must never be presented as current approval.
+- `GET /api/events`: SSE `evidence` updates and `transition` events only when overall state changes. New connections receive a snapshot. Reconnect clients fetch current history; there is no SSE replay. Up to 64 clients are supported; slow consumers are disconnected.
+- `GET /api/history`: last 100 transitions in memory, with IDs, timestamps, state changes and safe diagnostics. Cleared on restart; no account bodies, kubeconfig or secrets are stored.
+- `GET /api/health`: operational `MONITORING`, `DEGRADED` or `STOPPED`, source activity and diagnostics. HTTP 200 means the API responds, not that software is VERIFIED.
 
-Timeout efectivo por fuente de **15 segundos**: publica el diagnóstico y libera el tick, manteniendo la operación de transporte bajo seguimiento hasta que se resuelva o rechace. Cada fuente conserva su lock; no se inicia otra operación de la misma fuente mientras siga activa. SAS y Kubernetes pueden operar simultáneamente entre sí. Una fuente bloqueada no detiene la otra. Los resultados positivos tardíos se descartan; los rechazos tardíos se consumen sin errores no manejados. Tras terminar el transporte, el próximo tick elegible recupera la fuente automáticamente (SAS respeta su período de 60 segundos). Si nunca termina, esa fuente permanece bloqueada/degradada; no se abandona ni se sustituye por operaciones concurrentes. SAS ahora pasa AbortSignal al SDK para cancelar cada intento; si el transporte ignora la señal, se conserva el lock hasta su resolución. Kubernetes no expone cancelación mediante la interfaz actual. Reiniciar sigue siendo la recuperación manual para operaciones que nunca terminan.
+`freshness.sas` and `freshness.kubernetes` expose separate checked/attempt/completion timestamps, age, maximum age, freshness, in-flight and timeout information. Evidence age starts when reading begins; errors do not reset it. `freshness.evidenceCurrent` requires current evidence from both sources and a determined result.
 
-Limitaciones: polling no puede detectar una revocación o modificación on-chain inmediatamente después de la última lectura. La detección normal tarda hasta la próxima renovación y, durante fallos de disponibilidad, la exposición queda acotada por `ATTENODE_SAS_MAX_AGE_MS` y expiry. No se reutiliza evidencia que el monitor haya observado invalidada, pero no se afirma ausencia instantánea de revocaciones desconocidas. No hay frontend ni persistencia. No se estableció la causa de los fallos RPC observados; reducir la frecuencia no demuestra que fueran rate limiting. La frescura/expiry requieren un reloj local correcto. La selección de contexto y sus mecanismos de autenticación pertenecen al kubeconfig autorizado y al adaptador existente. Kubernetes solo realiza GET/list. La identidad depende de la evidencia CRI, no demuestra proveniencia de build ni convierte hashes Docker/CRI opacos en manifest digests. Un imageID no soportado conserva INDETERMINATE para identidad OCI aunque un mismatch de configuración fiable determine TRUST_BROKEN general.
+## Evidence lifecycle
 
-Pruebas sin lecturas reales, sockets ni archivos de configuración:
+Kubernetes is collected initially and every **5 seconds**, including when SAS is unavailable. SAS is validated initially and every **60 seconds**, always with **finalized** commitment. Each snapshot recomputes trust from validated SAS approval and current Kubernetes observations through the shared core.
+
+SAS approval may survive an availability failure only within `ATTENODE_SAS_MAX_AGE_MS` and before on-chain expiration. Such a snapshot can remain VERIFIED or TRUST_BROKEN with a visible SAS warning and DEGRADED health. Generic fetch failures do not prove rate limiting. Observed invalid credentials, schemas, attestations, missing accounts, initialization/address/decoding failures and explicit late rejections invalidate approval immediately. Late positive results cannot restore timed-out evidence. Without valid current approval, trust is INDETERMINATE; Kubernetes drift cannot be attributed to an unestablished identity.
+
+Kubernetes maximum age is **15 seconds**, but collection failures immediately invalidate current Kubernetes evidence. SAS freshness below its 60-second renewal interval intentionally creates INDETERMINATE gaps. Expiration is checked on every snapshot using the shared core rule.
+
+Each source has a **15-second watchdog** and its own operation lock. A timeout publishes a safe diagnostic while the transport remains tracked until settlement; no second operation for that source starts meanwhile. Sources can operate concurrently with each other. Late successful results are discarded. When transport settles, a later eligible tick can recover. An operation that never settles requires manual restart; Kubernetes currently has no cancellation interface.
+
+## RPC reliability
+
+The monitor uses `createMonitorDevnetSasReader`; the CLI retains its original reader transport. Both reuse account-fetching and validation logic. The monitor transport lets native fetch calculate Content-Length, retaining SDK bigint serialization, RPC transformations and finalized account reads.
+
+An offline regression on Node.js 24.10.0 reproduced the installed Kubernetes client's Undici dispatcher initialization interacting with Gill's explicit Content-Length: the header became a duplicated value and was rejected locally before connection. This was not evidence of RPC rate limiting. The operator subsequently validated the monitor-only fix in a persistent live process, including two scheduled SAS renewals. The original live exception's full contents were not collected, and compatibility across all Node/SDK versions is not established.
+
+Retries are limited to three attempts per account with 250/500 ms backoff, only for identified connection interruption, timeout, HTTP 429 or HTTP 502/503/504. Each attempt has a 2-second AbortSignal budget, and renewal has a 10-second budget from reader creation. Accounts are fetched sequentially. Generic unknown failures, TLS, address, decoding, initialization and missing accounts are not retried. If cancellation is ignored, the lock remains until settlement. No commitment downgrade or global dispatcher patch is used.
+
+## Validation
+
+From the repository root:
 
 ```bash
 npm run check
 npm run test:monitor
+npm run test:monitor:sas-comparison
+npm run test:monitor:rpc-transport
+npm run test:sas:reader
+npm run test:sas:k8s
 ```
 
-Fiabilidad RPC del monitor: hasta tres intentos por cuenta, con backoff de 250 y 500 ms, solo para conexión interrumpida/socket, timeout identificado, HTTP 429 y HTTP 502/503/504. Cada intento tiene AbortSignal con presupuesto máximo de 2 segundos y toda la renovación tiene un presupuesto de 10 segundos desde la creación del lector. El mismo lector/cliente atiende las cuentas secuencialmente. No hay Promise.race que libere el lock antes del transporte: se espera su settlement y se descarta la respuesta si el plazo venció. No se reintentan errores genéricos de fetch, TLS, dirección, decodificación, inicialización ni cuentas ausentes. Todos los intentos mantienen finalized. La opción de retry es exclusiva del entry point del monitor; el comportamiento del CLI continúa siendo de un intento.
+These automated tests use offline readers/transport fixtures. They cover drift/recovery, expiration, availability failures, timeout ownership, concurrency, SSE/history and the transport regression. Separately, the operator manually validated real Devnet/kind monitoring and dashboard drift/recovery; offline tests do not substitute for those observations.
 
-Diagnóstico RPC: se reconoce el statusCode solo dentro de un contexto SDK con el código tipado de error HTTP, y códigos de transporte allowlisted en cause. Nunca se publica ese contexto, headers, URL, mensaje, stack ni cuerpo externo. Un error HTTP no transitorio se reporta como SAS_RPC_HTTP_REJECTED; una conexión interrumpida como SAS_RPC_CONNECTION_RESET; HTTP 502/503/504 como SAS_RPC_HTTP_UNAVAILABLE. Estos diagnósticos distinguen causas observables, sin atribuir todo fallo a rate limiting. La incompatibilidad de transporte descrita abajo se reprodujo offline; su confirmación en el proceso del operador sigue pendiente.
+## Troubleshooting
 
-Persistent-process transport fix: the repository's installed Kubernetes client imports Undici 8.11.2, which initializes `undici.globalDispatcher.2` and replaces the legacy `undici.globalDispatcher.1` used by Node fetch. On Node 24.10.0, Gill's explicit content-length becomes a duplicated comma-separated value at that dispatcher. Its strict header validator rejects locally with UND_ERR_INVALID_ARG before connecting. Offline regression reproduces repeated legacy-dispatcher success followed by failures of both fresh and reused Gill clients after the Kubernetes import, with an offline connector recording zero calls. This is not RPC rate limiting or an exhausted RPC client. The live operator's original nested exception was not observed directly; confirmation is still required in their process.
+Safe diagnostics identify stages and allowlisted categories without publishing raw messages, headers, URLs, stack traces or account bytes. Unknown RPC errors do not establish a transient cause. Check source diagnostics and freshness separately from health and overall trust.
 
-`createMonitorDevnetSasReader` uses a small monitor-only RPC transport without an explicit Content-Length header, allowing fetch to calculate it. SDK bigint JSON serialization, RPC transformation, account fetching/decoding, finalized commitment, retry/cancellation and all attestation/binding/expiry checks remain in place. The standalone CLI keeps its original transport. No global dispatcher replacement, Node monkey patch, dependency downgrade, trust override or browser diagnostic endpoint is introduced. The serialization package was already installed transitively and is now declared directly at its existing locked version.
-
-Operator confirmation, with the existing authorized monitor environment configured and the old monitor stopped:
+Temporary process-local instrumentation is available after stopping the existing monitor:
 
 ```bash
 ATTENODE_DIAGNOSE_SAS=1 npm run monitor:start
 ```
 
-Expect old plain/retry phases after Kubernetes initialization to identify SAS_RPC_LOCAL_REQUEST_REJECTED, and fixed phases to validate SAS in that same process. Let the process continue for at least two 60-second scheduled SAS renewals; confirm both sources are fresh and normal overall verification agrees with the independent CLI. If fixed phases fail, report only their sanitized records and do not claim recovery. Restart without the flag after diagnosis. Offline reproduction: `npm run test:monitor:rpc-transport`. No real Solana or Kubernetes operations were performed during implementation.
+It compares original fresh/reused/retry SAS readers before, concurrently with and after Kubernetes initialization, then runs `FIXED_AFTER_K8S` and `FIXED_CONCURRENT_K8S` using the corrected transport. All probes perform full finalized SAS validation. Records go to local stderr only; no browser endpoint is exposed and probe results never seed monitor approval. Old transport phases can reproduce local rejection while fixed phases succeed. A diagnostic watchdog reports pending work without abandoning it; a probe that never settles prevents normal polling from starting. Restart without the flag for normal operation.
+
+## Boundaries
+
+Read-only GET/list collection does not enforce policy or roll back workloads. Kubernetes/CRI and RPC reports remain trusted sources. Unsupported runtime IDs remain OCI INDETERMINATE even if reliable configuration mismatch establishes overall TRUST_BROKEN. No verified build provenance is claimed.
+
+Polling cannot detect unknown revocations instantly: exposure is bounded by renewal, configured freshness and expiry. The local clock must be correct. History has no persistence, and a permanently blocked transport requires restart. See the [root guide](../../README.md) for approved identity and the independent CLI command.

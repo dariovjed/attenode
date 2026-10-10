@@ -1,141 +1,90 @@
-# Runtime baseline verification
+# Runtime and SAS deployment verification
 
-`verifyRuntimeIdentity(approved, observed)` is a pure, network-free function. It
-returns a status, reason objects (`code`, `message`, optional `field`), and the
-comparison basis. It has no dependency on SAS, Solana or Kubernetes clients.
+The implemented runtime verifier supports a manual Kubernetes baseline, an opt-in Solana SAS approval gate and the continuous monitor. The shared core preserves separate SAS validation, Kubernetes configuration agreement, OCI runtime identity and overall results.
 
-An approval selects `namespace`, Deployment `workload`, `container`, and
-`imageReference`. `runtimeImageID` optionally pins an observed CRI runtime
-baseline. An observation includes the same target fields plus `pod`, the
-configured `imageReference`, the CRI `runtimeImageID`, and container `ready`.
+## Run the existing CLI
 
-`VERIFIED` means a ready container matches this supplied baseline. It does **not**
-mean its artifact has cryptographic provenance. Mutable tags can point to new
-content; a tag-only approval cannot detect content replacement under the same
-tag. Results expose `basis: image-reference` in that case. Even with a runtime
-imageID baseline, this is local runtime identity comparison, not signature or
-build-provenance verification.
-
-Docker local image IDs, CRI imageIDs and registry manifest digests are separate
-identity domains. Never substitute one for another. Runtime IDs are compared
-exactly, including prefixes. The kind demo had empty CRI `repoDigests`, so no
-registry digest evidence is inferred from these fixtures.
-
-## Rules and reasons
-
-- `INVALID_APPROVAL`: incomplete or malformed approval -> INDETERMINATE.
-- `MISSING_OBSERVATION`: no observation -> INDETERMINATE.
-- `AMBIGUOUS_OBSERVATION`: arrays are not a selected container -> INDETERMINATE.
-- `MALFORMED_OBSERVATION`: invalid identity/runtime fields -> INDETERMINATE.
-- `TARGET_MISMATCH`: wrong namespace, Deployment or container -> INDETERMINATE;
-  this observation is not evidence about the approved target.
-- `IMAGE_REFERENCE_MISMATCH`: configured reference differs -> TRUST_BROKEN.
-- `RUNTIME_IMAGE_ID_MISMATCH`: supplied runtime baseline differs -> TRUST_BROKEN.
-- `MISSING_RUNTIME_IMAGE_ID`: absent, null or empty runtime ID -> INDETERMINATE.
-- `CONTAINER_NOT_READY`: readiness false or absent -> INDETERMINATE.
-- `BASELINE_MATCH`: all required comparisons and readiness pass -> VERIFIED.
-
-Valid mismatch evidence takes precedence over missing readiness/runtime data:
-a v2 reference with no ready runtime still breaks the approved v1 configuration.
-Malformed input and incorrect targets are rejected before drift comparison.
-
-## Offline demo
+From the repository root, after configuring the environment in the [root guide](../../README.md#run-the-dashboard):
 
 ```bash
-npm run demo:runtime
+npm run --silent verify:k8s -- \
+  --sas \
+  --kubeconfig "$ATTENODE_KUBECONFIG" \
+  --context "$ATTENODE_CONTEXT" \
+  --namespace "$ATTENODE_NAMESPACE" \
+  --deployment "$ATTENODE_DEPLOYMENT" \
+  --container "$ATTENODE_CONTAINER" \
+  --image-repository "$ATTENODE_IMAGE_REPOSITORY"
+```
+
+Append `--json` for the complete structured report on stdout; errors remain on stderr. Exit codes are `0` VERIFIED, `2` TRUST_BROKEN, `3` INDETERMINATE and `1` configuration/execution error. SAS mode rejects `--approved-image` and `--approved-runtime-image-id` overrides.
+
+The existing manual baseline mode remains available:
+
+```bash
+npm run --silent verify:k8s -- \
+  --kubeconfig "$ATTENODE_KUBECONFIG" \
+  --context "$ATTENODE_CONTEXT" \
+  --namespace attenode-demo --deployment demo-api --container demo-api \
+  --approved-image attenode/demo-api:v1
+```
+
+Manual `--approved-runtime-image-id` optionally supplies an exact runtime baseline. Manual VERIFIED means agreement with that supplied baseline, not SAS approval or cryptographic artifact identity. A tag-only baseline cannot detect content replacement under the same tag.
+
+## Shared implementation
+
+- `verification.ts`: pure `verifyRuntimeIdentity(approved, observed)` baseline comparison. Approvals select namespace, workload, container, image reference and optional exact runtime imageID. Results include status, reason codes and comparison basis.
+- `kubernetes.ts`: injected `KubernetesReader`, independent `collectKubernetesEvidence`, pure `compareKubernetesEvidence` and the combined one-shot adapter.
+- `kubernetes-client.ts` / `kubernetes-loader.ts`: read-only client with explicit kubeconfig and lazy loading. No default kubeconfig discovery or resource mutation. Optional CLI context selection changes only its private in-memory configuration; authentication follows that file, including configured plugins.
+- `sas-verification.ts`: local binding validation, `approvedIdentityFromSas`, manifest evidence comparison, expiration checks and `composeSasKubernetesReport` shared by CLI and monitor.
+- `../attestations/sas-reader.ts`, `sas-onchain.ts` and `sas-approval.ts`: wallet-free account fetching and account-chain/payload validation. Runtime reads remain finalized.
+- `diagnostics.ts`: safe stage/code explanations instead of raw external error text.
+
+`verifySasKubernetesDeployment` validates SAS before constructing the Kubernetes client. The monitor independently collects Kubernetes while periodically renewing SAS, then uses the same pure comparison and aggregation functions. It caches validated approval only, never an overall VERIFIED result. See the [monitor guide](../../apps/monitor/README.md) for freshness and transport lifecycle.
+
+## Kubernetes observations
+
+The adapter reads the Deployment, all paginated namespace ReplicaSets and Pods, then the Deployment again. Ownership is established by unique controller references and matching kinds, API versions, names and UIDs through Deployment → ReplicaSet → Pod. Names or labels alone never prove ownership.
+
+It selects exactly one named spec container and its container status. Readiness requires a Running/Ready Pod, a ready running container and no deletion timestamp. Missing status, duplicate matches, unresolved ownership and malformed metadata are conservative collection issues. Deployment UID/resourceVersion changes during collection invalidate the observation.
+
+Empty Pod sets, unready Pods, collection errors and mixed image/runtime/readiness observations yield INDETERMINATE. Per-Pod findings remain visible during ambiguous rollouts. Sequential API reads are not an atomic cluster snapshot.
+
+## SAS binding and aggregation
+
+The unchanged `DeploymentAttestationV1` schema attests repository, commit SHA, artifact digest, environment, provenance provider and deployedAt. Account ownership, discriminators, trusted credential/schema, issuer authority, schema version/layout, PDA/nonce, exact decoded payload and expiration are validated before approval is used.
+
+The approved digest comes from the decoded validated account, never a silent substitution of configured expected data. Image repository, namespace, Deployment and container are explicit **local policy**, not on-chain claims. This MVP supports the fixed demo-api binding documented in the [root guide](../../README.md#read-only-sas--kubernetes-verification).
+
+| Evidence | Overall result |
+| --- | --- |
+| Valid current SAS, matching configuration and complete supported matching runtime identity | VERIFIED |
+| Valid current SAS and reliable, ready, unambiguous configured-image mismatch | TRUST_BROKEN, even if unsupported OCI identity remains separately INDETERMINATE |
+| Valid SAS, matching configuration, missing/unsupported runtime identity | INDETERMINATE |
+| Missing/stale/expired/rejected approval, incomplete collection or ambiguous rollout | INDETERMINATE |
+
+Configuration mismatch promotion requires no collection issues and every selected ready Pod to report only the explicit image-reference mismatch. Missing/malformed runtime fields, unready Pods and ambiguous evidence remain blockers. Do not generalize the pure baseline function's mismatch precedence to integrated trust aggregation.
+
+SAS runtime identity accepts only canonical unprefixed registry-qualified `repository@sha256:<64 lowercase hex characters>` references. A supported differing reference can establish runtime TRUST_BROKEN; missing/unsupported formats remain runtime INDETERMINATE. Docker config IDs, arbitrary hashes and CRI prefixes are never normalized into OCI manifest identity. Matching Pod spec alone is insufficient.
+
+## Offline validation
+
+```bash
+npm run check
 npm run test:runtime
-npm run demo:runtime -- path/to/fixture.json
-```
-
-The optional fixture is `{ "approved": {...}, "observed": {...} }` using the
-models above. No live queries occur. CLI results are JSON; status is carried in
-the result rather than a policy-specific process exit code.
-
-## Next Kubernetes adapter
-
-Select the approved Deployment and resolve Pod owner references through its
-ReplicaSets; never infer Deployment ownership from Pod names or labels alone.
-For each selected Pod, locate exactly one matching entry in `spec.containers`
-and `status.containerStatuses` by container name. Reject duplicate matches or
-ambiguous ownership. Populate namespace and pod from metadata, workload from
-verified ownership, imageReference from the configured container, and imageID
-and readiness from its status. Also require the Pod to be Running, Ready and
-not terminating before setting `ready: true`; absent status sets readiness false
-and runtimeImageID null. Feed each Pod/container independently to the verifier.
-Report all Pods during rollouts, including mixed v1/v2 results. An empty Pod set
-must yield INDETERMINATE; never aggregate it to VERIFIED. The implemented adapter
-is described below.
-
-Registry-backed immutable `repo@sha256:...` references already fit the
-`imageReference` field and should become the preferred approved configuration.
-A future adapter can add explicitly typed registry-manifest evidence and a
-separate comparison basis after validating its source. It must distinguish
-manifest/index digests from runtime configuration IDs, and leave missing
-registry evidence INDETERMINATE when registry verification is required. Matching
-a configured digest reference alone must not be presented as proof that the
-runtime executed that artifact.
-
-## Read-only Kubernetes adapter
-
-`kubernetes.ts` accepts an injected reader; `kubernetes-client.ts` uses
-`@kubernetes/client-node` with an explicit kubeconfig file. It never calls
-`loadFromDefault`, edits a file, or changes global context. `--context` optionally
-selects a context only on its private in-memory KubeConfig; otherwise it uses the
-current context recorded in the explicitly supplied file. Authentication follows
-that file's client configuration, including authentication plugins if configured.
-
-```bash
-npm run verify:k8s -- --kubeconfig <path> --namespace attenode-demo --deployment demo-api --container demo-api --approved-image attenode/demo-api:v1 --approved-runtime-image-id sha256:236c1d781bc1577bcf8eea8dabab84a0e6bbc31e28255550d2afdf9c8d903937
-# Optional: append --context kind-attenode to select it explicitly.
 npm run test:k8s
+npm run test:k8s:output
+npm run test:sas:k8s
+npm run test:sas:reader
+npm run test:verification:diagnostics
+npm run test:verification:cli-diagnostic
+npm run demo:runtime
 ```
 
-Reads: target apps/v1 Deployment, namespace apps/v1 ReplicaSets, namespace v1
-Pods, then target Deployment again. Lists consume all continuation pages.
-Controller owner references must uniquely identify parent kind, API version,
-name and UID. Unrelated Pods with resolvable unrelated owners are excluded.
-Missing/ambiguous ownership and unresolved ReplicaSet references conservatively
-make the result INDETERMINATE, even if they occur elsewhere in the namespace.
-Names and labels alone never establish target ownership.
+`demo:runtime` is a network-free JSON fixture demonstration; an optional file can be supplied as `npm run demo:runtime -- path/to/fixture.json`. Its result carries status rather than the live CLI's policy-specific exit codes.
 
-Configured image comes from Pod spec; imageID and readiness come from the named
-container status. Running state, Pod Running/Ready, and absence of deletion are
-also required. Terminating Pods are retained as not-ready observations. Duplicate
-container matches, bad metadata, and UID mismatches are collection issues.
+Automated tests use offline observations and mocked accounts, including configuration drift with unsupported runtime IDs, mixed Pods, expiry, rejection and fail-closed errors. Separately, the operator manually validated the real Devnet/kind dashboard flow: approved deployment, drift detection and recovery, including conservative rolling-update states.
 
-Each Pod is passed to the existing verifier. Consistent replicas share its result.
-Conflicting image references, imageIDs or readiness produce an array input to
-its existing ambiguity rule and an aggregate INDETERMINATE; per-Pod drift reasons
-remain visible. Missing Pods yield MISSING_OBSERVATION. Collection/API failures
-are INDETERMINATE with sanitized diagnostics. Deployment UID/resourceVersion
-changes during collection also force INDETERMINATE. These sequential reads are
-not an atomic cluster snapshot; later runtime changes require another check.
+## Security boundaries
 
-The CLI defaults to concise human-readable output with target, approval, observed
-Pods, collection issues, status and reason explanations. Consistent replicas are
-grouped; large reports show at most five groups and three Pod names per group.
-Append `--json` for the complete report (approval, observations, per-Pod results,
-collection issues and final verification) as JSON only on stdout. Errors remain
-on stderr. When invoking through npm for machine parsing, use
-`npm run --silent verify:k8s -- ... --json` to suppress npm's own banner.
-Exit codes are
-0 VERIFIED, 2 TRUST_BROKEN, 3 INDETERMINATE, and 1 CLI/configuration failures.
-For the supplied consistent v2 state, expect TRUST_BROKEN, reference and runtime
-imageID mismatch reasons, and exit 2. Mixed v1/v2 rollout Pods yield INDETERMINATE.
-No registry digest equivalence is inferred from runtime IDs.
-
-## Opt-in SAS approval
-
-`verify:k8s --sas` adds a read-only Devnet approval gate and a separate runtime
-manifest-evidence gate. It preserves the manual baseline mode and rejects its
-approval flags in SAS mode. The SAS-approved digest is decoded from the validated
-account; target and image repository are explicit local policy. Overall VERIFIED
-requires all three stages to pass. Unsupported/missing imageIDs are
-INDETERMINATE even if Pod configuration matches.
-
-Only the operator-verified demo-api binding and canonical unprefixed
-`registry/repository@sha256:...` runtime evidence are supported. CRI prefixes and
-bare hashes are not converted into manifest digests. Runtime/API reporting is
-trusted; no verified build provenance is claimed. See the repository
-[README](../../README.md#read-only-sas--kubernetes-verification) for the exact live
-command, security guarantees, limitations and offline test commands.
+The verifier reads accounts and Kubernetes resources without loading a Solana wallet, submitting transactions or enforcing changes. It trusts the RPC endpoint and Kubernetes API/node/CRI observations; matching reported identity is not independent execution proof or cryptographically verified build provenance. Monitor health is not a trust verdict. The fixed attestation expires; renewal requires a deliberate approval process, not automatic trust extension.

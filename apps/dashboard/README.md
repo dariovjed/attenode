@@ -1,37 +1,35 @@
 # Attenode Live Trust Dashboard
 
-React + TypeScript + Vite frontend, entirely read-only. No wallets, signers, kubeconfig, mutation controls, synthetic production data, external fonts or chart services. The browser imports backend response types with `import type`; verification modules are not shipped to the browser.
+A read-only React, TypeScript and Vite interface for the working Attenode monitor. It presents backend verification decisions and keeps on-chain claims, local binding policy, runtime observations and operational health visibly separate.
 
-From the repository root, start the authorized monitor in one terminal with its existing configuration:
+## Start locally
 
-```bash
-export ATTENODE_KUBECONFIG="/path/to/authorized/kubeconfig"
-export ATTENODE_CONTEXT="kind-attenode"
-export ATTENODE_NAMESPACE="attenode-demo"
-export ATTENODE_DEPLOYMENT="demo-api"
-export ATTENODE_CONTAINER="demo-api"
-export ATTENODE_IMAGE_REPOSITORY="ghcr.io/dariovjed/demo-api"
-npm run monitor:start
-```
+From the repository root, start the monitor using the [monitor configuration guide](../monitor/README.md#start). This authorizes real read-only Devnet/Kubernetes requests; starting the frontend alone does not start the monitor.
 
 In a second terminal:
 
 ```bash
-# First-time installation, if dashboard dependencies have not been installed:
+# If dashboard dependencies are not yet installed:
 npm ci --prefix apps/dashboard --ignore-scripts --no-audit --no-fund
 npm run dashboard:start
 ```
 
-Open **http://127.0.0.1:5173**. Vite uses a fixed loopback port and proxies `/api` (including SSE) to `http://127.0.0.1:3001`. Requests keep the local frontend Origin and use a loopback Host, matching the backend's existing restrictive CORS/Host policy. Its filesystem serving allowlist is restricted to the dashboard directory and explicitly denies secret/local files. No backend changes are needed. Starting the frontend does not start the monitor or authorize live reads.
+Open **http://127.0.0.1:5173**. Vite uses a fixed loopback port and proxies `/api`, including SSE, to `http://127.0.0.1:3001`. The proxy preserves the frontend Origin and uses a loopback Host, matching monitor CORS/Host restrictions. Filesystem serving is restricted to the dashboard directory with secret/local-file exclusions.
 
-Architecture:
+## Interface and architecture
 
-- `src/model.ts`: shared backend types, response guards and presentation freshness checks. It never validates/approves artifacts. VERIFIED/TRUST_BROKEN are presented only from current backend evidence. Disconnected, expired, stale, missing and diagnostic-only evidence cannot supply current approval fields. Backend INDETERMINATE is a normal trust state. LOADING/UNAVAILABLE/STALE are presentation states, not new verifier decisions.
-- `src/feed.ts`: initial status/history/health requests, one native EventSource, automatic reconnect, snapshot ordering guards, request cleanup and health polling. Late initial fetches cannot overwrite newer SSE evidence. Transition events refresh the authoritative history endpoint; no transition entries are synthesized from observations. Reconnection refreshes history, including backend restarts and ID resets.
-- `src/App.tsx`: live status, independent freshness cards, operational health, on-chain claims, off-chain binding policy, Kubernetes observations and transition timeline. Account links use Solana Explorer Devnet. Current source details do not fall back to `lastObtainedReport`.
-- `src/styles.css`: dark, responsive layout with text/symbol status cues, system typography and no animations.
+- `src/App.tsx`: prominent trust status, independent source freshness, operational health, SAS claims, local policy, Kubernetes observations and recent transitions. Real public account addresses link to Solana Explorer Devnet.
+- `src/model.ts`: type-only backend response imports, response guards and presentation freshness checks. Backend verification modules are not shipped to the browser.
+- `src/feed.ts`: initial `/api/status`, `/api/history` and `/api/health` requests plus one native EventSource for `/api/events`. Ordering guards prevent late initial fetches overwriting newer SSE evidence. Reconnection refreshes authoritative history, including ID resets after monitor restart.
+- `src/styles.css`: responsive dark layout, readable technical values and text/symbol status distinctions without dependence on color alone.
 
-Validation:
+VERIFIED, TRUST_BROKEN and INDETERMINATE are backend decisions. Loading, unavailable and stale states describe presentation availability; they do not create new trust decisions. The browser never derives approval from operational health, historical reports or diagnostic-only evidence. Disconnected, expired, missing or stale evidence cannot supply current VERIFIED approval.
+
+The timeline uses `/api/history` and live transition notifications exclusively. Transition notifications refresh history; the browser does not invent entries from observed status changes. Evidence events update source details even when overall state is unchanged.
+
+## Validation
+
+From the repository root:
 
 ```bash
 npm run dashboard:check
@@ -42,6 +40,14 @@ npm run test:monitor
 npm run test:sas:k8s
 ```
 
-Tests use synthetic offline fixtures only, never imported by the browser. They cover React server rendering of all trust states, missing SAS with fresh Kubernetes, stale/expired/historical evidence suppression, health/trust separation, safe errors, SSE reconnect, response races, history replacement and cleanup. Production build emits to the ignored `apps/dashboard/dist/` directory.
+Offline tests cover React server rendering of all three trust states, unavailable SAS with fresh Kubernetes, stale/expired/historical evidence suppression, health/trust separation, safe errors, SSE reconnect, response races, history replacement and cleanup. Test fixtures are not imported by the browser. The production build emits to ignored `apps/dashboard/dist/`.
 
-Limitations: no browser end-to-end or real-cluster verification was performed. When the backend withholds `report` because SAS is unavailable, the dashboard can show Kubernetes freshness/diagnostics but cannot invent its Pod details or target policy. History is limited to the monitor's in-memory retention. The production static build needs a same-origin read-only `/api` proxy; Vite's development proxy is not part of the static build. Build provenance is not established by matching SAS/OCI/CRI evidence.
+Separately, the operator manually validated the live dashboard against Devnet and kind: VERIFIED → TRUST_BROKEN after image drift → VERIFIED after restoration, with INDETERMINATE during rolling updates and live SSE refreshes. This manual validation is distinct from automated offline tests; no automated browser end-to-end suite is provided.
+
+## Security and limitations
+
+There are no wallet, signer, kubeconfig, mutation controls, synthetic production results, external fonts or chart services in the frontend. Verification stays in the backend. Local target/image repository policy is not presented as an on-chain claim. Kubernetes-reported identity is not cryptographically verified build provenance.
+
+If the backend withholds `report` because SAS is unavailable, the UI can show Kubernetes freshness and diagnostics but cannot invent Pod details or policy. History is limited to the monitor's in-memory retention. A static production build needs a same-origin read-only `/api` proxy; Vite's development proxy is not included in the build. No production hosting configuration is provided.
+
+No real screenshot asset is included yet; the [root README](../../README.md) has a submission screenshot placeholder.
