@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { getAddressDecoder, type EncodedAccount } from "gill";
+import { getAddressDecoder, type Address, type EncodedAccount } from "gill";
 import { decodeAttestation, deserializeAttestationData, SOLANA_ATTESTATION_SERVICE_PROGRAM_ADDRESS } from "sas-lib";
 import type { DeploymentAttestation } from "../attestations/deployment.js";
 import { deploymentSasSchema, serializeDeploymentSasAttestation } from "../attestations/sas.js";
@@ -45,13 +45,13 @@ function decodeCheckedAttestation(account: EncodedAccount, deployment: Deploymen
   }
   return decodeAttestation(account).data;
 }
-export function verifyDemoAttestation(account: EncodedAccount, expectedExpiry: bigint, deployment: DeploymentAttestation): void {
+export function verifyDemoAttestation(account: EncodedAccount, expectedExpiry: bigint, deployment: DeploymentAttestation, nonce: Address = demoNonce): void {
   const data = decodeCheckedAttestation(account, deployment);
   const mismatches: string[] = [];
   const check = (field: string, matches: boolean): void => { if (!matches) mismatches.push(field); };
   check("Credential", data.credential === expectedCredential);
   check("Schema", data.schema === expectedSchema);
-  check("nonce", data.nonce === demoNonce);
+  check("nonce", data.nonce === nonce);
   // Rust stores the issuing authorized signer, rather than a separate authority.
   check("issuer/signer", data.signer === expectedIdentity);
   check("expiry", expectedExpiry > 0n && data.expiry === expectedExpiry);
@@ -62,7 +62,7 @@ export function verifyDemoAttestation(account: EncodedAccount, expectedExpiry: b
 
 // Existing accounts keep their original deployment time. Recover only that
 // field from the public payload, then verify all bytes against the demo model.
-export function verifyExistingDemoAttestation(account: EncodedAccount, maximumExpiry: bigint, deployment: DeploymentAttestation): bigint {
+export function verifyExistingDemoAttestation(account: EncodedAccount, maximumExpiry: bigint, deployment: DeploymentAttestation, nonce: Address = demoNonce): bigint {
   const data = decodeCheckedAttestation(account, deployment);
   const payload = deserializeAttestationData(deploymentSasSchema, Uint8Array.from(data.data)) as Record<string, unknown>;
   const deployedAt = payload.deployedAt;
@@ -74,6 +74,6 @@ export function verifyExistingDemoAttestation(account: EncodedAccount, maximumEx
   const original = { ...deployment, deployedAt };
   const expectedExpiry = expiryFromUnixTime(Math.floor(timestamp / 1000));
   if (expectedExpiry > maximumExpiry) throw new DiagnosticError("Existing Attestation expiry is outside the controlled demo time range");
-  verifyDemoAttestation(account, expectedExpiry, original);
+  verifyDemoAttestation(account, expectedExpiry, original, nonce);
   return expectedExpiry;
 }

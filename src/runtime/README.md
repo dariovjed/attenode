@@ -63,8 +63,8 @@ and readiness from its status. Also require the Pod to be Running, Ready and
 not terminating before setting `ready: true`; absent status sets readiness false
 and runtimeImageID null. Feed each Pod/container independently to the verifier.
 Report all Pods during rollouts, including mixed v1/v2 results. An empty Pod set
-must yield INDETERMINATE; never aggregate it to VERIFIED. No adapter is included
-yet.
+must yield INDETERMINATE; never aggregate it to VERIFIED. The implemented adapter
+is described below.
 
 Registry-backed immutable `repo@sha256:...` references already fit the
 `imageReference` field and should become the preferred approved configuration.
@@ -123,3 +123,19 @@ Exit codes are
 For the supplied consistent v2 state, expect TRUST_BROKEN, reference and runtime
 imageID mismatch reasons, and exit 2. Mixed v1/v2 rollout Pods yield INDETERMINATE.
 No registry digest equivalence is inferred from runtime IDs.
+
+## Opt-in SAS approval
+
+`verify:k8s --sas` adds a read-only Devnet approval gate and a separate runtime
+manifest-evidence gate. It preserves the manual baseline mode and rejects its
+approval flags in SAS mode. The SAS-approved digest is decoded from the validated
+account; target and image repository are explicit local policy. Overall VERIFIED
+requires all three stages to pass. Unsupported/missing imageIDs are
+INDETERMINATE even if Pod configuration matches.
+
+Only the operator-verified demo-api binding and canonical unprefixed
+`registry/repository@sha256:...` runtime evidence are supported. CRI prefixes and
+bare hashes are not converted into manifest digests. Runtime/API reporting is
+trusted; no verified build provenance is claimed. See the repository
+[README](../../README.md#read-only-sas--kubernetes-verification) for the exact live
+command, security guarantees, limitations and offline test commands.

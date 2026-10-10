@@ -1,5 +1,6 @@
 import type { V1Deployment, V1ReplicaSet, V1Pod, V1ObjectMeta, V1OwnerReference } from "@kubernetes/client-node";
 import { verifyRuntimeIdentity, type ApprovedDeploymentIdentity, type ObservedRuntimeIdentity, type RuntimeVerificationResult } from "./verification.js";
+import { diagnostic, safeDiagnostic, VerificationDiagnosticError, type SafeDiagnostic } from "./diagnostics.js";
 
 export interface KubernetesReader {
   deployment(namespace: string, name: string): Promise<V1Deployment>;
@@ -12,6 +13,7 @@ export interface KubernetesVerification {
   perPod: { observation: ObservedRuntimeIdentity; result: RuntimeVerificationResult }[];
   collectionIssues: string[];
   result: RuntimeVerificationResult;
+  diagnostics?: SafeDiagnostic[];
 }
 function controller(meta?: V1ObjectMeta): V1OwnerReference | undefined {
   const owners = meta?.ownerReferences;
@@ -28,10 +30,11 @@ function validMeta(meta: V1ObjectMeta | undefined, namespace: string): boolean {
 /** Only GET/list dependencies are exposed; no credentials or client globals here. */
 export async function verifyKubernetesDeployment(reader: KubernetesReader, approved: ApprovedDeploymentIdentity): Promise<KubernetesVerification> {
   const observations: ObservedRuntimeIdentity[] = [], collectionIssues: string[] = [];
+  const diagnostics: SafeDiagnostic[] = [];
   try {
     const deployment = await reader.deployment(approved.namespace, approved.workload);
     if (!validMeta(deployment.metadata, approved.namespace) || deployment.metadata?.name !== approved.workload || deployment.metadata.deletionTimestamp) {
-      throw new Error("invalid deployment");
+      throw new VerificationDiagnosticError("KUBERNETES_TARGET_INVALID");
     }
     const replicaSets = await reader.replicaSets(approved.namespace);
     const owned = new Map<string, V1ReplicaSet>();
@@ -80,9 +83,10 @@ export async function verifyKubernetesDeployment(reader: KubernetesReader, appro
     if (after.metadata?.uid !== deployment.metadata.uid || after.metadata?.resourceVersion !== deployment.metadata.resourceVersion) {
       collectionIssues.push("Deployment changed during collection; retry with a fresh snapshot.");
     }
-  } catch {
+  } catch (error) {
     // Avoid exposing API exception bodies or credential-bearing client context.
     collectionIssues.push("Kubernetes read failed or returned an invalid target Deployment.");
+    diagnostics.push(safeDiagnostic(error, "KUBERNETES_OBSERVATION"));
   }
   const perPod = observations.map(observation => ({ observation, result: verifyRuntimeIdentity(approved, observation) }));
   const identities = new Set(observations.map(o => JSON.stringify([o.imageReference, o.runtimeImageID, o.ready])));
@@ -92,8 +96,9 @@ export async function verifyKubernetesDeployment(reader: KubernetesReader, appro
     result = verifyRuntimeIdentity(approved, observations); // existing ambiguity rule
   } else if (!perPod.length) result = verifyRuntimeIdentity(approved, null);
   else result = perPod[0]!.result; // every replica has identical comparison inputs
-  return { approved, observations, perPod, collectionIssues, result };
+  if (!diagnostics.length && result.status === "INDETERMINATE") diagnostics.push(diagnostic("KUBERNETES_OBSERVATION_INCOMPLETE"));
+  return { approved, observations, perPod, collectionIssues, result, ...(diagnostics.length ? { diagnostics } : {}) };
 }
-export function verificationExitCode(result: RuntimeVerificationResult): number {
+export function verificationExitCode(result: Pick<RuntimeVerificationResult, "status">): number {
   return result.status === "VERIFIED" ? 0 : result.status === "TRUST_BROKEN" ? 2 : 3;
 }

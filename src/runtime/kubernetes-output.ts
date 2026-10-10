@@ -1,15 +1,44 @@
 import { parseArgs } from "node:util";
 import type { KubernetesVerification } from "./kubernetes.js";
+import type { SasKubernetesReport } from "./sas-verification.js";
+import { formatDiagnostic, VerificationDiagnosticError } from "./diagnostics.js";
 
 export function parseVerificationArgs(args: string[]) {
-  return parseArgs({ args, options: {
+  const { values, tokens } = parseArgs({ args, tokens: true, options: {
     kubeconfig: { type: "string" }, context: { type: "string" }, namespace: { type: "string" },
     deployment: { type: "string" }, container: { type: "string" }, "approved-image": { type: "string" },
     "approved-runtime-image-id": { type: "string" }, json: { type: "boolean", default: false },
-  }, strict: true, allowPositionals: false }).values;
+    sas: { type: "boolean", default: false }, "image-repository": { type: "string" },
+  }, strict: true, allowPositionals: false });
+  const options = tokens.filter(token => token.kind === "option").map(token => token.name);
+  if (new Set(options).size !== options.length) throw new VerificationDiagnosticError("CLI_ARGUMENTS_DUPLICATE");
+  if (values.sas && (values["approved-image"] !== undefined || values["approved-runtime-image-id"] !== undefined)) {
+    throw new VerificationDiagnosticError("SAS_MANUAL_OVERRIDE");
+  }
+  if (!values.sas && values["image-repository"] !== undefined) throw new VerificationDiagnosticError("CLI_ARGUMENTS_INVALID");
+  return values;
 }
 // Keep terminal control characters out of human display; JSON retains all data.
 const display = (value: string): string => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+
+export function formatSasKubernetesReport(report: SasKubernetesReport, json = false): string {
+  if (json) return JSON.stringify(report, null, 2);
+  const lines = ["Attenode SAS + Kubernetes Verification", `Overall: ${report.result.status}`, `  ${display(report.result.reason)}`,
+    "", `SAS attestation validation: ${report.sas.status}`, `  Devnet: ${report.sas.attestation}`, `  ${display(report.sas.reason)}`];
+  if (report.sas.diagnostic) lines.push(formatDiagnostic(report.sas.diagnostic));
+  if (report.sas.payload) lines.push(`  repository: ${display(report.sas.payload.repository)}`, `  commit: ${report.sas.payload.commitSha}`,
+    `  environment: ${display(report.sas.payload.environment)}`, `  approved manifest: ${report.sas.payload.artifactDigest}`, `  expires (Unix seconds): ${report.sas.expiry}`);
+  lines.push("", "Local binding policy (not on-chain claims)",
+    `  ${display(report.localPolicy.namespace)}/${display(report.localPolicy.workload)} container ${display(report.localPolicy.container)}`,
+    `  image repository: ${display(report.localPolicy.imageRepository)}`,
+    "", `Runtime artifact identity evidence: ${report.artifact.status}`, `  ${display(report.artifact.reason)}`);
+  for (const pod of report.artifact.perPod.slice(0, 5)) lines.push(`  ${display(pod.pod)}: ${pod.result.status} — ${display(pod.result.reason)}`);
+  if (report.artifact.perPod.length > 5) lines.push("  Additional per-Pod artifact results available with --json.");
+  lines.push("", "Kubernetes baseline agreement (configuration comparison)");
+  lines.push(report.kubernetes ? formatKubernetesReport(report.kubernetes) : "  Not evaluated; SAS approval is unavailable.");
+  lines.push("", "Runtime reporting and local binding policy are trusted. No verified build provenance is claimed.");
+  return lines.join("\n");
+}
 
 export function formatKubernetesReport(report: KubernetesVerification, json = false): string {
   if (json) return JSON.stringify(report, null, 2);
@@ -43,6 +72,7 @@ export function formatKubernetesReport(report: KubernetesVerification, json = fa
     if (issues.length > 5) lines.push(`  ${issues.length - 5} additional issues; use --json for details.`);
     lines.push("");
   }
+  for (const safe of report.diagnostics ?? []) lines.push(formatDiagnostic(safe));
   const symbol = result.status === "VERIFIED" ? "✓" : result.status === "TRUST_BROKEN" ? "✗" : "?";
   lines.push(`${symbol} ${result.status}`);
   for (const reason of result.reasons) lines.push(`  ${reason.code}: ${display(reason.message)}`);
